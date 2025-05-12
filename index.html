@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-track GPX Comparator</title>
+
+    <!-- Leaflet map styles -->
+    <link rel="stylesheet"
+          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin />
+
+    <!-- Simple page styles (optional) -->
+    <style>
+        :root { font-family: system-ui, sans-serif; }
+        body   { margin: 0; padding: 0 1rem 2rem; }
+        h1, h2 { margin: 1.2rem 0 0.8rem; }
+        #inputs label { display: inline-block; margin: 0.4rem 0.8rem 0.4rem 0; }
+        #inputs span  { font-size: 0.85rem; margin-left: 0.4rem; }
+        #inputs button { margin-left: 0.4rem; }
+        #map      { height: 420px; margin: 1rem 0 1.5rem; border: 1px solid #ccc; }
+        canvas    { max-width: 100%; background:#f9f9f9; border:1px solid #eee; }
+        button#addBtn { margin: 0.6rem 0; padding: 0.4rem 0.8rem; }
+    </style>
+</head>
+<body>
+    <h1>Compare up to 4 GPX Tracks</h1>
+
+    <!-- file-picker controls -->
+    <h2>Select GPX files</h2>
+    <div id="inputs"></div>
+    <button id="addBtn" type="button">＋ Add track</button>
+    <p class="hint">Each file gets its own colour and offset (max 4 files by default).</p>
+
+    <!-- map -->
+    <div id="map"></div>
+
+    <!-- elevation chart -->
+    <h2>Elevation profile</h2>
+    <canvas id="elevChart" height="240"></canvas>
+
+    <!-- Polyline-offset plugin (adds the `offset` option to polylines) -->
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-polylineoffset@1.1.1/leaflet.polylineoffset.js"></script>
+
+    <!-- GPX parser (global constructor is `gpxParser`) -->
+    <script src="gpxparser.js"></script>
+ <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+    <!-- Your logic -->
+    <script src="app.js" defer></script>
+
+    <!-- Leaflet (no defer so it executes immediately) -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</body>
+</html>
