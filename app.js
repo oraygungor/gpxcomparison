@@ -7,7 +7,7 @@
  * 3. Reads and parses GPX files.
  * 4. Draws tracks on the map and elevation profiles on the chart.
  * 5. When exactly two tracks are loaded, it:
- * a. Detects and highlights overlapping segments on the map.
+ * a. Detects and highlights overlapping segments on the map using a more accurate algorithm.
  * b. Calculates total distance for each track, the overlap distance, and the difference.
  * c. Displays these statistics in the sidebar.
  */
@@ -167,8 +167,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const gpxText = await file.text();
-            // FIX: Use a different variable name ('parser') for the instance
-            // to avoid conflict with the 'gpxParser' constructor.
             const parser = new gpxParser();
             parser.parse(gpxText);
             processTrack(parser, trackIndex);
@@ -374,35 +372,51 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Finds overlap, draws it, and triggers stats display.
+     * Finds overlap, draws it, and triggers stats display using a more accurate and performant algorithm.
      */
     function findAndDrawOverlap(track1, track2) {
-        const line1 = turf.lineString(track1.points.map(p => [p.lng, p.lat]));
-        const line2 = turf.lineString(track2.points.map(p => [p.lng, p.lat]));
+        // Optimization: Iterate through the points of the shorter track for better performance.
+        const shorterTrack = track1.points.length < track2.points.length ? track1 : track2;
+        const longerTrack = track1.points.length < track2.points.length ? track2 : track1;
+
+        const lineStringToIterate = turf.lineString(shorterTrack.points.map(p => [p.lng, p.lat]));
+        const lineStringToCompare = turf.lineString(longerTrack.points.map(p => [p.lng, p.lat]));
 
         const overlappingSegments = [];
         let currentSegment = [];
 
-        for (const point1 of line1.geometry.coordinates) {
-            const pt = turf.point(point1);
-            const distance = turf.pointToLineDistance(pt, line2, { units: 'meters' });
+        // Iterate through each point of the shorter track
+        for (const point of lineStringToIterate.geometry.coordinates) {
+            const pt = turf.point(point);
+            
+            // ALGORITHM FIX: Use `nearestPointOnLine` to find the actual closest point on the other track's geometry.
+            // This is more accurate than `pointToLineDistance` and prevents visual artifacts.
+            const nearestPointOnLine = turf.nearestPointOnLine(lineStringToCompare, pt, { units: 'meters' });
+            
+            // Now, calculate the real-world distance between the original point and its nearest counterpart.
+            const distance = turf.distance(pt, nearestPointOnLine, { units: 'meters' });
 
             if (distance < OVERLAP_THRESHOLD_METERS) {
-                currentSegment.push(point1);
+                // If it's close, add the original point to the current overlapping segment.
+                currentSegment.push(point);
             } else {
-                if (currentSegment.length > 1) {
+                // If it's not close, and we have a segment built up, store it.
+                if (currentSegment.length > 1) { // A line needs at least 2 points.
                     overlappingSegments.push(currentSegment);
                 }
+                // Reset for the next potential segment.
                 currentSegment = [];
             }
         }
+        // Add the last segment if it exists after the loop finishes.
         if (currentSegment.length > 1) {
             overlappingSegments.push(currentSegment);
         }
 
+        // If we found any overlaps, draw them on the map and calculate stats.
         if (overlappingSegments.length > 0) {
             const leafletCoords = overlappingSegments.map(segment =>
-                segment.map(coord => [coord[1], coord[0]])
+                segment.map(coord => [coord[1], coord[0]]) // Convert back to [lat, lng] for Leaflet
             );
 
             overlapLayer = L.polyline(leafletCoords, {
@@ -412,9 +426,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }).addTo(map);
             overlapLayer.bringToBack();
             
-            // Calculate total length of overlap and display stats
+            // Calculate total length of all found overlap segments.
             const overlapMultiLine = turf.multiLineString(overlappingSegments.map(s => s));
             const overlapKm = turf.length(overlapMultiLine, { units: 'kilometers' });
+            
+            // Pass the original track1 and track2 to display stats with correct names.
             displayOverlapStats(overlapKm, track1, track2);
         }
     }
