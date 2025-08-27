@@ -1,93 +1,65 @@
 /**
- * Multi-track GPX Comparator -- Overlap Detection & Stats Logic
+ * Multi-track GPX Comparator -- Overlap Detection & Stats Logic (optimized)
  *
- * This script handles the application's core logic:
- * 1. Initializes Leaflet map and Chart.js chart.
- * 2. Dynamically adds file inputs AND a stats section to the DOM.
- * 3. Reads and parses GPX files.
- * 4. Draws tracks on the map and elevation profiles on the chart.
- * 5. When exactly two tracks are loaded, it:
- * a. Detects and highlights overlapping segments on the map using a more accurate algorithm.
- * b. Calculates total distance for each track, the overlap distance, and the difference.
- * c. Displays these statistics in the sidebar.
+ * - Leaflet preferCanvas -> çok daha akıcı çizim
+ * - Polylinelerde OFFSET KALDIRILDI (loop/halkaları önlemek için)
+ * - Overlap algosu: kısa track'i sabit adımda yeniden örnekle (resample),
+ *   diğer hattın lineString'i ile pointToLineDistance (metre) < eşik ise "içeride" say.
+ *   Segmentleri birleştir, MultiLineString uzunluğunu hesapla, kalın tek kat overlap çiz.
+ * - Chart.js animasyon/point kapalı -> daha hızlı.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- CONFIGURATION ---
     const MAX_TRACKS = 4;
     const TRACK_COLORS = ['#007bff', '#dc3545', '#28a745', '#ffc107'];
-    const OVERLAP_COLOR = '#d63384'; // Bright magenta for high visibility
-    const OVERLAP_THRESHOLD_METERS = 20; // How close tracks need to be to be considered overlapping.
+    const OVERLAP_COLOR = '#d63384';
+    const OVERLAP_THRESHOLD_METERS = 20;  // yakınlık eşiği
+    const RESAMPLE_STEP_METERS = 10;      // resample aralığı (performans/hassasiyet dengesi)
 
     // --- GLOBAL STATE ---
-    let map;
+    let map, canvasRenderer;
     let elevationChart;
-    let tracksData = []; // Array to hold all processed track data
-    let mapLayers = []; // Array to hold map layers for easy removal
-    let chartDatasets = []; // Array to hold chart datasets
-    let overlapLayer = null; // Layer for the overlap polyline
+    let tracksData = [];   // {name, points[{lat,lng,ele}], chartData[{x,y}], color, totalDistance}
+    let mapLayers = [];    // L.Polyline
+    let chartDatasets = [];
+    let overlapLayer = null;
 
     // --- DOM ELEMENTS ---
     const inputsDiv = document.getElementById('inputs');
     const addBtn = document.getElementById('addBtn');
 
-    /**
-     * Initializes the Leaflet map.
-     */
+    /** Initializes the Leaflet map (canvas renderer for speed). */
     function initMap() {
-        map = L.map('map').setView([41.0082, 28.9784], 10); // Default to Istanbul
+        map = L.map('map', { preferCanvas: true }).setView([41.0082, 28.9784], 10);
+        canvasRenderer = L.canvas({ padding: 0.5 });
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
     }
 
-    /**
-     * Initializes the Chart.js elevation chart.
-     */
+    /** Initializes the Chart.js elevation chart (no animation, no points). */
     function initChart() {
         const ctx = document.getElementById('elevChart').getContext('2d');
         elevationChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                datasets: []
-            },
+            data: { datasets: [] },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: false,
+                parsing: false,
+                interaction: { mode: 'index', intersect: false },
+                elements: { point: { radius: 0 } },
                 scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Mesafe (km)'
-                        }
-                    },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Yükseklik (m)'
-                        }
-                    }
-                },
-                plugins: {
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false,
-                    },
-                },
-                elements: {
-                    point: {
-                        radius: 0 // Hide points on the line for a cleaner look
-                    }
+                    x: { type: 'linear', title: { display: true, text: 'Mesafe (km)' } },
+                    y: { title: { display: true, text: 'Yükseklik (m)' } }
                 }
             }
         });
     }
-    
-    /**
-     * Dynamically creates and injects the stats section into the sidebar.
-     * This avoids needing to modify the HTML file manually.
-     */
+
+    /** Dynamically creates stats section. */
     function createStatsSection() {
         const sidebarContent = document.querySelector('.sidebar-content');
         if (!sidebarContent) return;
@@ -95,48 +67,37 @@ document.addEventListener('DOMContentLoaded', () => {
         const statsSection = document.createElement('section');
         statsSection.className = 'stats-section';
         statsSection.id = 'stats-section';
-        statsSection.style.display = 'none'; // Initially hidden
+        statsSection.style.display = 'none';
 
         const title = document.createElement('h2');
         title.textContent = 'Karşılaştırma Sonuçları';
 
         const contentDiv = document.createElement('div');
         contentDiv.id = 'stats-content';
-        // Basic styling for the stats list
         contentDiv.innerHTML = `
             <style>
-                .stats-section ul { list-style-type: none; padding: 0; margin: 0; }
-                .stats-section li { background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px 15px; border-radius: 5px; margin-bottom: 8px; font-size: 0.95rem; display: flex; justify-content: space-between; }
-                .stats-section li strong { color: #495057; }
+                .stats-section ul { list-style-type:none; padding:0; margin:0; }
+                .stats-section li { background:#f8f9fa; border:1px solid #dee2e6; padding:10px 15px; border-radius:8px; margin-bottom:8px; font-size:.95rem; display:flex; justify-content:space-between; }
+                .stats-section li strong { color:#495057; }
             </style>
             <ul></ul>
         `;
-
         statsSection.appendChild(title);
         statsSection.appendChild(contentDiv);
-        
-        // Append after the chart section
+
         const chartSection = document.querySelector('.chart-section');
-        if(chartSection) {
-            chartSection.parentNode.insertBefore(statsSection, chartSection.nextSibling);
-        } else {
-            sidebarContent.appendChild(statsSection);
-        }
+        if (chartSection) chartSection.parentNode.insertBefore(statsSection, chartSection.nextSibling);
+        else sidebarContent.appendChild(statsSection);
     }
 
-
-    /**
-     * Adds a new file input element to the DOM.
-     */
+    /** Add a new file input row. */
     function addFileInput() {
         const trackIndex = inputsDiv.children.length;
         if (trackIndex >= MAX_TRACKS) return;
 
         const container = document.createElement('div');
         container.className = 'input-container';
-        container.style.display = 'flex';
-        container.style.alignItems = 'center';
-        container.style.marginBottom = '0.5rem';
+        container.style.cssText = 'display:flex; align-items:center; margin-bottom:0.5rem;';
 
         const input = document.createElement('input');
         input.type = 'file';
@@ -145,20 +106,17 @@ document.addEventListener('DOMContentLoaded', () => {
         input.style.flexGrow = '1';
 
         const colorIndicator = document.createElement('span');
-        colorIndicator.style.cssText = `display: inline-block; width: 16px; height: 16px; background-color: ${TRACK_COLORS[trackIndex]}; border-radius: 50%; margin-right: 10px; flex-shrink: 0;`;
-        
+        colorIndicator.style.cssText = `display:inline-block; width:16px; height:16px; background:${TRACK_COLORS[trackIndex]}; border-radius:50%; margin-right:10px; flex-shrink:0;`;
+
         container.appendChild(colorIndicator);
         container.appendChild(input);
         inputsDiv.appendChild(container);
 
         input.addEventListener('change', (event) => handleFileSelect(event, trackIndex));
-        
         addBtn.disabled = inputsDiv.children.length >= MAX_TRACKS;
     }
 
-    /**
-     * Handles the file selection, parsing, and processing.
-     */
+    /** Handle GPX file selection and render. */
     async function handleFileSelect(event, trackIndex) {
         const file = event.target.files[0];
         if (!file) return;
@@ -170,126 +128,100 @@ document.addEventListener('DOMContentLoaded', () => {
             const parser = new gpxParser();
             parser.parse(gpxText);
             processTrack(parser, trackIndex);
-            
+
             drawTrackOnMap(tracksData[trackIndex], trackIndex);
             drawTrackOnChart(tracksData[trackIndex], trackIndex);
-            
-            checkForOverlap();
 
-        } catch (error) {
-            console.error("Error parsing GPX file:", error);
-            alert("GPX dosyası okunurken bir hata oluştu.");
+            checkForOverlap();
+        } catch (err) {
+            console.error('Error parsing GPX:', err);
+            alert('GPX dosyası okunurken bir hata oluştu.');
         }
     }
 
-    /**
-     * Extracts and calculates data from the parsed GPX object.
-     */
+    /** Extracts arrays and computes distance/elevation profile. */
     function processTrack(gpx, trackIndex) {
-        const points = gpx.tracks[0].points.map(p => ({
-            lat: p.lat,
-            lng: p.lon,
-            ele: p.ele
-        }));
+        const tr = gpx.tracks?.[0];
+        if (!tr || !tr.points?.length) throw new Error('Empty GPX track');
 
+        const points = tr.points.map(p => ({ lat: p.lat, lng: p.lon, ele: p.ele ?? 0 }));
         let cumulativeDistance = 0;
+
         const chartData = points.map((point, i) => {
-            if (i > 0) {
-                cumulativeDistance += gpx.calcDistanceBetween(points[i - 1], point);
-            }
-            return {
-                x: cumulativeDistance / 1000, // distance in km
-                y: point.ele // elevation in m
-            };
+            if (i > 0) cumulativeDistance += gpx.calcDistanceBetween(points[i - 1], point);
+            return { x: cumulativeDistance / 1000, y: point.ele };
         });
 
         tracksData[trackIndex] = {
-            name: gpx.tracks[0].name || `Rota ${trackIndex + 1}`,
-            points: points,
-            chartData: chartData,
+            name: tr.name || `Rota ${trackIndex + 1}`,
+            points,
+            chartData,
             color: TRACK_COLORS[trackIndex],
-            totalDistance: (gpx.tracks[0].distance.total || cumulativeDistance) / 1000 // Total distance in km
+            totalDistance: (tr.distance?.total ?? cumulativeDistance) / 1000
         };
     }
 
-    /**
-     * Draws the track polyline on the Leaflet map.
-     */
+    /** Draws track polyline (no offset to avoid loops). */
     function drawTrackOnMap(trackData, trackIndex) {
-        if (mapLayers[trackIndex]) {
-            map.removeLayer(mapLayers[trackIndex]);
-        }
-        
+        if (mapLayers[trackIndex]) map.removeLayer(mapLayers[trackIndex]);
+
         const latlngs = trackData.points.map(p => [p.lat, p.lng]);
         const polyline = L.polyline(latlngs, {
             color: trackData.color,
             weight: 4,
-            opacity: 0.8,
-            offset: (trackIndex - 1.5) * 4 // Offset lines to avoid perfect overlap
+            opacity: 0.9,
+            lineCap: 'round',
+            lineJoin: 'round',
+            smoothFactor: 1.0,
+            renderer: canvasRenderer
+            // NOTE: offset intentionally removed to prevent circle artifacts
         }).addTo(map);
 
         mapLayers[trackIndex] = polyline;
         map.fitBounds(polyline.getBounds().pad(0.1));
     }
 
-    /**
-     * Draws the elevation profile on the Chart.js chart.
-     */
+    /** Draws elevation dataset. */
     function drawTrackOnChart(trackData, trackIndex) {
-        if (chartDatasets[trackIndex]) {
-            elevationChart.data.datasets[trackIndex] = null; // Placeholder
-        }
-
-        const newDataset = {
+        const ds = {
             label: `${trackData.name} (${trackData.totalDistance.toFixed(2)} km)`,
             data: trackData.chartData,
             borderColor: trackData.color,
-            backgroundColor: trackData.color + '33', // Semi-transparent fill
+            backgroundColor: trackData.color + '33',
             borderWidth: 2,
             fill: true,
+            spanGaps: true
         };
-        
-        chartDatasets[trackIndex] = newDataset;
-
-        elevationChart.data.datasets = chartDatasets.filter(ds => ds);
+        chartDatasets[trackIndex] = ds;
+        elevationChart.data.datasets = chartDatasets.filter(Boolean);
         elevationChart.update();
     }
-    
-    /**
-     * Adds a button to remove a loaded track.
-     */
+
+    /** Add remove button after file picked. */
     function addRemoveButton(container, trackIndex, fileName) {
-        const existingButton = container.querySelector('button');
-        if (existingButton) existingButton.remove();
-        
+        const existingBtn = container.querySelector('button');
+        if (existingBtn) existingBtn.remove();
         const existingSpan = container.querySelector('span.file-name');
-        if(existingSpan) existingSpan.remove();
+        if (existingSpan) existingSpan.remove();
 
         const nameSpan = document.createElement('span');
-        nameSpan.textContent = `${fileName.length > 20 ? fileName.substring(0, 18) + '...' : fileName}`;
+        nameSpan.textContent = fileName.length > 26 ? fileName.substring(0, 24) + '…' : fileName;
         nameSpan.className = 'file-name';
-        nameSpan.style.fontSize = '0.9rem';
-        nameSpan.style.color = '#6c757d';
-        nameSpan.style.whiteSpace = 'nowrap';
-        nameSpan.style.overflow = 'hidden';
-        nameSpan.style.textOverflow = 'ellipsis';
-
+        nameSpan.style.cssText = 'font-size:.9rem; color:#6c757d; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
 
         const removeBtn = document.createElement('button');
         removeBtn.textContent = '×';
         removeBtn.title = 'Rotayı kaldır';
-        removeBtn.style.cssText = 'margin-left: 10px; cursor: pointer; border: none; background: #dc3545; color: white; border-radius: 50%; width: 22px; height: 22px; line-height: 22px; text-align: center; flex-shrink: 0;';
-        
+        removeBtn.style.cssText = 'margin-left:10px; cursor:pointer; border:none; background:#dc3545; color:#fff; border-radius:50%; width:22px; height:22px; line-height:22px; text-align:center; flex-shrink:0;';
+
         container.querySelector('input').style.display = 'none';
         container.appendChild(nameSpan);
         container.appendChild(removeBtn);
 
         removeBtn.onclick = () => removeTrack(trackIndex, container);
     }
-    
-    /**
-     * Removes a track's data, map layer, and chart dataset.
-     */
+
+    /** Remove a track from map, chart and UI. */
     function removeTrack(trackIndex, container) {
         tracksData[trackIndex] = null;
 
@@ -297,55 +229,49 @@ document.addEventListener('DOMContentLoaded', () => {
             map.removeLayer(mapLayers[trackIndex]);
             mapLayers[trackIndex] = null;
         }
-
         if (chartDatasets[trackIndex]) {
             chartDatasets[trackIndex] = null;
-            elevationChart.data.datasets = chartDatasets.filter(ds => ds);
+            elevationChart.data.datasets = chartDatasets.filter(Boolean);
             elevationChart.update();
         }
 
-        container.innerHTML = ''; 
+        container.innerHTML = '';
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.gpx';
         input.dataset.index = trackIndex;
         input.style.flexGrow = '1';
         input.addEventListener('change', (event) => handleFileSelect(event, trackIndex));
-        
+
         const colorIndicator = document.createElement('span');
-        colorIndicator.style.cssText = `display: inline-block; width: 16px; height: 16px; background-color: ${TRACK_COLORS[trackIndex]}; border-radius: 50%; margin-right: 10px; flex-shrink: 0;`;
-        
+        colorIndicator.style.cssText = `display:inline-block; width:16px; height:16px; background:${TRACK_COLORS[trackIndex]}; border-radius:50%; margin-right:10px; flex-shrink:0;`;
+
         container.appendChild(colorIndicator);
         container.appendChild(input);
 
         checkForOverlap();
+        addBtn.disabled = inputsDiv.children.length >= MAX_TRACKS ? true : false;
     }
 
-    // --- OVERLAP DETECTION & STATS LOGIC ---
+    // --- OVERLAP DETECTION & STATS ---
 
-    /**
-     * Clears the stats display area.
-     */
     function clearOverlapStats() {
         const statsSection = document.getElementById('stats-section');
         if (statsSection) {
             statsSection.style.display = 'none';
-            const content = statsSection.querySelector('#stats-content ul');
-            if(content) content.innerHTML = '';
+            const ul = statsSection.querySelector('#stats-content ul');
+            if (ul) ul.innerHTML = '';
         }
     }
-    
-    /**
-     * Displays the calculated overlap statistics.
-     */
+
     function displayOverlapStats(overlapKm, track1, track2) {
         const statsSection = document.getElementById('stats-section');
-        const contentUl = statsSection.querySelector('#stats-content ul');
+        const contentUl = statsSection?.querySelector('#stats-content ul');
         if (!statsSection || !contentUl) return;
 
         const overlapKmFormatted = overlapKm.toFixed(2);
-        const track1DiffKmFormatted = (track1.totalDistance - overlapKm).toFixed(2);
-        const track2DiffKmFormatted = (track2.totalDistance - overlapKm).toFixed(2);
+        const track1DiffKmFormatted = Math.max(0, track1.totalDistance - overlapKm).toFixed(2);
+        const track2DiffKmFormatted = Math.max(0, track2.totalDistance - overlapKm).toFixed(2);
 
         contentUl.innerHTML = `
             <li><strong>Ortak Mesafe:</strong> <span>${overlapKmFormatted} km</span></li>
@@ -355,82 +281,96 @@ document.addEventListener('DOMContentLoaded', () => {
         statsSection.style.display = 'block';
     }
 
-    /**
-     * Checks if exactly two tracks are loaded and triggers analysis.
-     */
     function checkForOverlap() {
         clearOverlapStats();
         if (overlapLayer) {
             map.removeLayer(overlapLayer);
             overlapLayer = null;
         }
-
-        const activeTracks = tracksData.filter(t => t);
-        if (activeTracks.length === 2) {
-            findAndDrawOverlap(activeTracks[0], activeTracks[1]);
+        const active = tracksData.filter(Boolean);
+        if (active.length === 2) {
+            findAndDrawOverlap(active[0], active[1]);
         }
     }
 
     /**
-     * Finds overlap, draws it, and triggers stats display using a more accurate and performant algorithm.
+     * Overlap finder:
+     * - Kısa hattı sabit aralıkla (RESAMPLE_STEP_METERS) yeniden örnekle.
+     * - Her örnek noktası için diğer hattın lineString'ine pointToLineDistance hesapla.
+     * - Eşik altındaki noktaları ardışık segmentlere grupla.
+     * - Segment uzunluklarını Turf.length ile topla, tek bir multiPolyline çiz.
      */
     function findAndDrawOverlap(track1, track2) {
-        // Optimization: Iterate through the points of the shorter track for better performance.
-        const shorterTrack = track1.points.length < track2.points.length ? track1 : track2;
-        const longerTrack = track1.points.length < track2.points.length ? track2 : track1;
+        // choose shorter by length (km)
+        const ls1 = turf.lineString(track1.points.map(p => [p.lng, p.lat]));
+        const ls2 = turf.lineString(track2.points.map(p => [p.lng, p.lat]));
+        const len1 = turf.length(ls1, { units: 'kilometers' });
+        const len2 = turf.length(ls2, { units: 'kilometers' });
 
-        const lineStringToIterate = turf.lineString(shorterTrack.points.map(p => [p.lng, p.lat]));
-        const lineStringToCompare = turf.lineString(longerTrack.points.map(p => [p.lng, p.lat]));
+        const shortLine = len1 <= len2 ? ls1 : ls2;
+        const longLine  = len1 <= len2 ? ls2 : ls1;
+        const trackShort = len1 <= len2 ? track1 : track2;
+        const trackLong  = len1 <= len2 ? track2 : track1;
+
+        // resample shorter line at fixed step (meters)
+        const stepKm = RESAMPLE_STEP_METERS / 1000;
+        const shortLenKm = turf.length(shortLine, { units: 'kilometers' });
+        const sampled = [];
+        for (let d = 0; d <= shortLenKm; d += stepKm) {
+            sampled.push(turf.along(shortLine, d, { units: 'kilometers' }).geometry.coordinates);
+        }
+        // ensure last point included exactly
+        if (sampled.length === 0 || sampled[sampled.length - 1] !== shortLine.geometry.coordinates.slice(-1)[0]) {
+            sampled.push(shortLine.geometry.coordinates.slice(-1)[0]);
+        }
+
+        // hysteresis ( giriş/çıkışta parazit engellemek için )
+        const enterThresh = OVERLAP_THRESHOLD_METERS;      // içine girme eşiği
+        const exitThresh  = OVERLAP_THRESHOLD_METERS + 5;  // çıkış için biraz tolerans
 
         const overlappingSegments = [];
-        let currentSegment = [];
+        let current = [];
+        let inside = false;
 
-        // Iterate through each point of the shorter track
-        for (const point of lineStringToIterate.geometry.coordinates) {
-            const pt = turf.point(point);
-            
-            // ALGORITHM FIX: Use `nearestPointOnLine` to find the actual closest point on the other track's geometry.
-            // This is more accurate than `pointToLineDistance` and prevents visual artifacts.
-            const nearestPointOnLine = turf.nearestPointOnLine(lineStringToCompare, pt, { units: 'meters' });
-            
-            // Now, calculate the real-world distance between the original point and its nearest counterpart.
-            const distance = turf.distance(pt, nearestPointOnLine, { units: 'meters' });
+        for (const coord of sampled) {
+            const pt = turf.point(coord);
+            const distM = turf.pointToLineDistance(pt, longLine, { units: 'meters' });
 
-            if (distance < OVERLAP_THRESHOLD_METERS) {
-                // If it's close, add the original point to the current overlapping segment.
-                currentSegment.push(point);
-            } else {
-                // If it's not close, and we have a segment built up, store it.
-                if (currentSegment.length > 1) { // A line needs at least 2 points.
-                    overlappingSegments.push(currentSegment);
+            if (!inside) {
+                if (distM <= enterThresh) {
+                    inside = true;
+                    current.push(coord);
                 }
-                // Reset for the next potential segment.
-                currentSegment = [];
+            } else {
+                if (distM <= exitThresh) {
+                    current.push(coord);
+                } else {
+                    if (current.length > 1) overlappingSegments.push(current);
+                    current = [];
+                    inside = false;
+                }
             }
         }
-        // Add the last segment if it exists after the loop finishes.
-        if (currentSegment.length > 1) {
-            overlappingSegments.push(currentSegment);
-        }
+        if (current.length > 1) overlappingSegments.push(current);
 
-        // If we found any overlaps, draw them on the map and calculate stats.
-        if (overlappingSegments.length > 0) {
-            const leafletCoords = overlappingSegments.map(segment =>
-                segment.map(coord => [coord[1], coord[0]]) // Convert back to [lat, lng] for Leaflet
-            );
-
+        if (overlappingSegments.length) {
+            // draw as one polyline with multiple parts (multiPoly)
+            const leafletCoords = overlappingSegments.map(seg => seg.map(c => [c[1], c[0]]));
             overlapLayer = L.polyline(leafletCoords, {
                 color: OVERLAP_COLOR,
                 weight: 8,
-                opacity: 0.75
+                opacity: 0.8,
+                lineCap: 'round',
+                lineJoin: 'round',
+                renderer: canvasRenderer
             }).addTo(map);
-            overlapLayer.bringToBack();
-            
-            // Calculate total length of all found overlap segments.
-            const overlapMultiLine = turf.multiLineString(overlappingSegments.map(s => s));
-            const overlapKm = turf.length(overlapMultiLine, { units: 'kilometers' });
-            
-            // Pass the original track1 and track2 to display stats with correct names.
+            overlapLayer.bringToFront();
+
+            // compute overlap length accurately
+            const multi = turf.multiLineString(overlappingSegments);
+            const overlapKm = turf.length(multi, { units: 'kilometers' });
+
+            // display stats using original pair order (track1, track2) for names
             displayOverlapStats(overlapKm, track1, track2);
         }
     }
@@ -438,7 +378,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- INITIALIZATION ---
     initMap();
     initChart();
-    createStatsSection(); // Dynamically add the stats area to the DOM
-    addFileInput(); // Add the first file input
+    createStatsSection();
+    addFileInput();
     addBtn.addEventListener('click', addFileInput);
 });
