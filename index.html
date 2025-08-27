@@ -1,57 +1,206 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Multi-track GPX Comparator</title>
+    <title>Gelişmiş GPX Karşılaştırıcı</title>
 
-    <!-- Leaflet map styles -->
-    <link rel="stylesheet"
-          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-          crossorigin />
+    <!-- Google Fonts (Daha modern bir görünüm için) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
 
-    <!-- Simple page styles (optional) -->
+    <!-- Leaflet map stilleri -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin />
+
     <style>
-        :root { font-family: system-ui, sans-serif; }
-        body   { margin: 0; padding: 0 1rem 2rem; }
-        h1, h2 { margin: 1.2rem 0 0.8rem; }
-        #inputs label { display: inline-block; margin: 0.4rem 0.8rem 0.4rem 0; }
-        #inputs span  { font-size: 0.85rem; margin-left: 0.4rem; }
-        #inputs button { margin-left: 0.4rem; }
-        #map      { height: 420px; margin: 1rem 0 1.5rem; border: 1px solid #ccc; }
-        canvas    { max-width: 100%; background:#f9f9f9; border:1px solid #eee; }
-        button#addBtn { margin: 0.6rem 0; padding: 0.4rem 0.8rem; }
+        /* --- Genel Sayfa Ayarları --- */
+        :root {
+            --primary-color: #007bff;
+            --light-gray: #f8f9fa;
+            --border-color: #dee2e6;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --sidebar-width: 420px;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Sayfanın kaymasını engeller */
+            background-color: var(--light-gray);
+        }
+
+        /* --- Ana Yerleşim (Layout) --- */
+        .main-container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #map {
+            flex-grow: 1; /* Mevcut alanın tamamını kapla */
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* --- Yan Panel (Sidebar) --- */
+        .sidebar {
+            width: var(--sidebar-width);
+            flex-shrink: 0; /* Küçülmeyi engelle */
+            background-color: #ffffff;
+            box-shadow: var(--shadow);
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto; /* İçerik sığmazsa kaydırma çubuğu çıkar */
+        }
+
+        .sidebar-content {
+            padding: 1.5rem 2rem;
+        }
+        
+        .sidebar-header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .sidebar-header h1 {
+            font-size: 1.75rem;
+            margin: 0 0 0.5rem;
+            color: #212529;
+            line-height: 1.2;
+        }
+
+        .sidebar-header p {
+            margin: 0;
+            color: #6c757d;
+            font-size: 0.95rem;
+        }
+
+        /* --- Kontrol ve Grafik Bölümleri --- */
+        .controls-section, .chart-section {
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            color: #343a40;
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+        }
+
+        #inputs {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        #inputs label {
+            font-size: 0.9rem;
+            color: #495057;
+        }
+        
+        #inputs span {
+            font-size: 0.8rem;
+            color: #6c757d;
+            margin-left: 0.5rem;
+        }
+
+        button#addBtn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            width: 100%;
+            margin-top: 1rem;
+        }
+
+        button#addBtn:hover {
+            background-color: #0056b3;
+        }
+
+        button#addBtn:active {
+            transform: scale(0.98);
+        }
+
+        /* --- Grafik Alanı --- */
+        .chart-container {
+            position: relative;
+            width: 100%;
+            background: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 0.5rem;
+        }
+
+        /* --- Mobil ve Küçük Ekranlar için --- */
+        @media (max-width: 900px) {
+            .main-container {
+                flex-direction: column; /* Paneli haritanın altına al */
+            }
+
+            .sidebar {
+                width: 100%;
+                height: 55vh; /* Ekranın yarısından biraz fazlası */
+                box-sizing: border-box;
+                box-shadow: 0 -4px 12px rgba(0,0,0,0.05); /* Üst gölge */
+            }
+
+            #map {
+                height: 45vh;
+            }
+        }
     </style>
 </head>
 <body>
-    <h1>Compare up to 4 GPX Tracks</h1>
 
-    <!-- file-picker controls -->
-    <h2>Select GPX files</h2>
-    <div id="inputs"></div>
-    <button id="addBtn" type="button">＋ Add track</button>
-    <p class="hint">Each file gets its own colour and offset (max 4 files by default).</p>
+    <div class="main-container">
+        <!-- Haritanın bulunacağı ana alan -->
+        <div id="map"></div>
 
-    <!-- map -->
-    <div id="map"></div>
+        <!-- Kontrollerin ve grafiğin olacağı yan panel -->
+        <aside class="sidebar">
+            <header class="sidebar-header">
+                <h1>GPX Karşılaştırıcı</h1>
+                <p>Harita üzerinde 4 adede kadar GPX rotasını karşılaştırın.</p>
+            </header>
+            
+            <div class="sidebar-content">
+                <section class="controls-section">
+                    <h2>Rotaları Yönet</h2>
+                    <div id="inputs">
+                        <!-- JS tarafından dinamik olarak eklenecek inputlar buraya gelecek -->
+                    </div>
+                    <button id="addBtn" type="button">＋ Yeni Rota Ekle</button>
+                </section>
 
-    <!-- elevation chart -->
-    <h2>Elevation profile</h2>
-    <canvas id="elevChart" height="640"></canvas>
+                <section class="chart-section">
+                    <h2>Yükseklik Profili</h2>
+                    <div class="chart-container">
+                        <canvas id="elevChart"></canvas>
+                    </div>
+                </section>
+            </div>
+        </aside>
+    </div>
 
-    <!-- Polyline-offset plugin (adds the `offset` option to polylines) -->
+    <!-- Kütüphaneler -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/leaflet-polylineoffset@1.1.1/leaflet.polylineoffset.js"></script>
-
-    <!-- GPX parser (global constructor is `gpxParser`) -->
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Mevcut JS Dosyalarınız -->
     <script src="gpxparser.js"></script>
- <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
-    <!-- Your logic -->
     <script src="app.js" defer></script>
 
-    <!-- Leaflet (no defer so it executes immediately) -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </body>
 </html>
