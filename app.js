@@ -167,9 +167,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const gpxText = await file.text();
-            const gpxParser = new gpxParser();
-            gpxParser.parse(gpxText);
-            processTrack(gpxParser, trackIndex);
+            // FIX: Use a different variable name ('parser') for the instance
+            // to avoid conflict with the 'gpxParser' constructor.
+            const parser = new gpxParser();
+            parser.parse(gpxText);
+            processTrack(parser, trackIndex);
             
             drawTrackOnMap(tracksData[trackIndex], trackIndex);
             drawTrackOnChart(tracksData[trackIndex], trackIndex);
