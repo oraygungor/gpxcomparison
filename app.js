@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- CONFIGURATION ---
     const MAX_TRACKS = 4;
     const TRACK_COLORS = ['#007bff', '#dc3545', '#28a745', '#ffc107'];
-    const OVERLAP_COLOR = '#d63384';
+    const OVERLAP_COLOR = '#ffd000';
     const OVERLAP_THRESHOLD_METERS = 20;  // yakınlık eşiği
     const RESAMPLE_STEP_METERS = 10;      // resample aralığı (performans/hassasiyet dengesi)
 
